@@ -105,6 +105,7 @@
 
 <footer>
   <div class="toolbar">
+    <label class="toggle"><input type="checkbox" id="online" checked> Интернет</label>
     <label class="toggle"><input type="checkbox" id="creative"> Творческий режим</label>
     <span id="stats"></span>
   </div>
@@ -297,6 +298,37 @@
     var cands = cityCandidates(city || DEFAULT_CITY).slice(0, 2);
     var idx = 0;
 
+    // wttr.in в браузере иногда отдаёт не короткий формат, а целую HTML-страницу.
+    // Поэтому: если пришёл HTML — вытаскиваем текст погоды из div, а если и это не
+    // похоже на погоду — считаем ответ неудачным и отвечаем нейросетью.
+    function parseWttr(raw, cand) {
+      if (!raw) return null;
+      var text = String(raw);
+      if (text.indexOf('<') >= 0) {
+        var m = text.match(/<div class="term-container"[^>]*>([\s\S]*?)<\/div>/);
+        if (!m) return null;
+        text = m[1].replace(/<[^>]*>/g, ' ')
+                   .replace(/&#47;/g, '/').replace(/&amp;/g, '&')
+                   .replace(/&nbsp;/g, ' ').replace(/&#176;/g, '°');
+      }
+      text = text.trim();
+      if (!text || text.indexOf('|') < 0) return null;
+      var parts = text.split('|').map(function (x) { return x.trim(); });
+      if (parts.length < 6 || !parts[0] || !parts[2]) return null;
+      for (var i = 0; i < 6; i++) {
+        if (!parts[i] || parts[i].length > 60) return null;   // это точно не погода
+      }
+      var place = parts[0], desc = parts[1], temp = parts[2], feels = parts[3],
+          wind = parts[4], hum = parts[5];
+      if (place.toLowerCase() === cand.toLowerCase() && FEMININE_STEMS[place.toLowerCase()]) {
+        place = FEMININE_STEMS[place.toLowerCase()];
+      }
+      var out = 'Погода сейчас: ' + place + ' — ' + desc.toLowerCase() + ', ' + temp;
+      var t = parseInt(temp, 10), f = parseInt(feels, 10);
+      if (!isNaN(t) && !isNaN(f) && Math.abs(f - t) >= 3) out += ' (ощущается как ' + feels + ')';
+      return out + '. Ветер ' + wind.replace('km/h', 'км/ч') + ', влажность ' + hum + '.';
+    }
+
     function tryFast() {
       if (idx >= cands.length) return Promise.resolve(null);
       var cand = cands[idx++];
@@ -304,18 +336,8 @@
         return fetchRaw('https://wttr.in/' + encodeURIComponent(cand) +
           '?format=' + encodeURIComponent('%l|%C|%t|%f|%w|%h') + '&lang=ru&m', true);
       }).then(function (raw) {
-        if (!raw || raw.indexOf('|') < 0 || /unknown/i.test(raw)) return tryFast();
-        var parts = raw.split('|').map(function (x) { return x.trim(); });
-        if (parts.length < 6 || !parts[0] || !parts[2]) return tryFast();
-        var place = parts[0], desc = parts[1], temp = parts[2], feels = parts[3],
-            wind = parts[4], hum = parts[5];
-        if (place.toLowerCase() === cand.toLowerCase() && FEMININE_STEMS[place.toLowerCase()]) {
-          place = FEMININE_STEMS[place.toLowerCase()];
-        }
-        var out = 'Погода сейчас: ' + place + ' — ' + desc.toLowerCase() + ', ' + temp;
-        var t = parseInt(temp, 10), f = parseInt(feels, 10);
-        if (!isNaN(t) && !isNaN(f) && Math.abs(f - t) >= 3) out += ' (ощущается как ' + feels + ')';
-        return out + '. Ветер ' + wind.replace('km/h', 'км/ч') + ', влажность ' + hum + '.';
+        var answer = parseWttr(raw, cand);
+        return answer || tryFast();
       });
     }
 
@@ -484,9 +506,9 @@
   var chat = document.getElementById('chat');
   var input = document.getElementById('input');
   var sendBtn = document.getElementById('send');
-  var creativeBox = document.getElementById('creative');
-  var onlineBox = document.getElementById('online');
-  var statsEl = document.getElementById('stats');
+  var creativeBox = document.getElementById('creative') || { checked: false };
+  var onlineBox = document.getElementById('online') || { checked: true };
+  var statsEl = document.getElementById('stats') || { textContent: '' };
   var model = null;
 
   var SUGGESTIONS = ['привет!', 'какая погода в Таллине?', 'кто такой Юрий Гагарин?',
@@ -537,7 +559,21 @@
     }, 100);
     var useInternet = onlineBox.checked && !creativeBox.checked && window.VenitySkills;
 
+    var finished = false;
+    setTimeout(function () {
+      if (!finished) {
+        finished = true;
+        clearInterval(secsTimer);
+        if (wait.parentNode) wait.remove();
+        addMsg('Что-то пошло не так при ответе. Обнови страницу (потяни вниз) и попробуй ещё раз.', 'bot',
+               'ошибка интерфейса');
+        sendBtn.disabled = false;
+      }
+    }, 20000);
+
     function finish(reply, source) {
+      if (finished) return;
+      finished = true;
       clearInterval(secsTimer);
       var ms = Math.round(performance.now() - t0);
       wait.remove();
